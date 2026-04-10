@@ -6,6 +6,7 @@ from datetime import datetime
 import psycopg2
 import os
 from dotenv import load_dotenv
+import pytz
 
 # -------------------------
 # START DEBUG
@@ -152,7 +153,8 @@ def save_daily(stock, data):
         print(f"Skipping {stock} (invalid price)", flush=True)
         return
 
-    today = datetime.now().date().isoformat()
+    bd_tz = pytz.timezone("Asia/Dhaka")
+    today = datetime.now(bd_tz).date().isoformat()
 
     insert_daily(
         stock=stock,
