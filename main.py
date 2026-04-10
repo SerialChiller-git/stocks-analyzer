@@ -129,8 +129,6 @@ if __name__ == "__main__":
 
     stocks = fetch_stocks()
 
-    # 🔥 TEMP: limit for testing
-    # stocks = stocks[:10]
 
     success = 0
     failed = 0
