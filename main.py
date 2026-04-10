@@ -23,15 +23,17 @@ HEADERS = {
 }
 
 # -------------------------
-# DB CONNECTION (NEW)
+# DB CONNECTION
 # -------------------------
 load_dotenv()
 
+print("Connecting to DB...", flush=True)
 conn = psycopg2.connect(os.getenv("DB_URL"))
 cursor = conn.cursor()
+print("Connected to DB ✅", flush=True)
 
 # -------------------------
-# INSERT FUNCTION (UPDATED)
+# INSERT FUNCTION
 # -------------------------
 def insert_daily(stock, date, open_price, high, low, close, volume):
     cursor.execute("""
@@ -46,22 +48,23 @@ def insert_daily(stock, date, open_price, high, low, close, volume):
         volume = EXCLUDED.volume
     """, (stock, date, open_price, high, low, close, volume))
 
-    conn.commit()
-
 # -------------------------
 # FETCH STOCK LIST
 # -------------------------
 def fetch_stocks():
+    print("Fetching stock list...", flush=True)
     response = requests.get(
         'https://www.dsebd.org/ajax/suggestList.php',
         params={'suggestType': 'tc'},
         cookies=COOKIES,
         headers=HEADERS
     )
-    return response.json()
+    stocks = response.json()
+    print(f"Total stocks fetched: {len(stocks)}", flush=True)
+    return stocks
 
 # -------------------------
-# FETCH SINGLE STOCK HTML
+# FETCH SINGLE STOCK
 # -------------------------
 def fetch_instrument(inst: str) -> str:
     response = requests.post(URL, data={"inst": inst}, headers=HEADERS, cookies=COOKIES)
@@ -97,34 +100,24 @@ def parse_order_book(html: str) -> dict:
     return {"last_price": last_price, "volume": total_volume}
 
 # -------------------------
-# BUILD CANDLE (SIMPLIFIED)
-# -------------------------
-def build_daily_candle(price):
-    return {
-        "open": price,
-        "high": price,
-        "low": price,
-        "close": price
-    }
-
-# -------------------------
 # SAVE DAILY
 # -------------------------
 def save_daily(stock, data):
     price = data["last_price"]
 
     if price is None or price == 0:
+        print(f"Skipping {stock} (no price)", flush=True)
         return
 
-    candle = build_daily_candle(price)
+    today = datetime.now().date().isoformat()
 
     insert_daily(
         stock=stock,
-        date=datetime.now().date().isoformat(),
-        open_price=candle["open"],
-        high=candle["high"],
-        low=candle["low"],
-        close=candle["close"],
+        date=today,
+        open_price=price,
+        high=price,
+        low=price,
+        close=price,
         volume=data["volume"]
     )
 
@@ -132,13 +125,33 @@ def save_daily(stock, data):
 # MAIN
 # -------------------------
 if __name__ == "__main__":
+    print("Starting scraper...", flush=True)
+
     stocks = fetch_stocks()
 
-    for stock in stocks:
+    # 🔥 TEMP: limit for testing
+    # stocks = stocks[:10]
+
+    success = 0
+    failed = 0
+
+    for i, stock in enumerate(stocks):
         try:
+            print(f"[{i+1}/{len(stocks)}] Processing {stock}", flush=True)
+
             html = fetch_instrument(stock)
             data = parse_order_book(html)
             save_daily(stock, data)
-            print(f"Saved {stock}")
+
+            success += 1
+
         except Exception as e:
-            print(f"Error {stock}: {e}")
+            print(f"Error {stock}: {e}", flush=True)
+            conn.rollback()  # VERY IMPORTANT
+            failed += 1
+
+    # commit once at end (better performance)
+    conn.commit()
+
+    print("Finished scraping!", flush=True)
+    print(f"Success: {success}, Failed: {failed}", flush=True)
