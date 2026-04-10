@@ -142,6 +142,7 @@ if __name__ == "__main__":
             html = fetch_instrument(stock)
             data = parse_order_book(html)
             save_daily(stock, data)
+            conn.commit()
 
             success += 1
 
@@ -150,8 +151,6 @@ if __name__ == "__main__":
             conn.rollback()  # VERY IMPORTANT
             failed += 1
 
-    # commit once at end (better performance)
-    conn.commit()
 
     print("Finished scraping!", flush=True)
     print(f"Success: {success}, Failed: {failed}", flush=True)
