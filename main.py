@@ -8,6 +8,21 @@ import os
 from dotenv import load_dotenv
 
 # -------------------------
+# START DEBUG
+# -------------------------
+print("🚀 Script started", flush=True)
+
+# -------------------------
+# LOAD ENV
+# -------------------------
+load_dotenv()
+
+db_url = os.getenv("DB_URL")
+
+print("DB_URL exists:", db_url is not None, flush=True)
+print("DB_URL preview:", str(db_url)[:50], flush=True)
+
+# -------------------------
 # CONFIG
 # -------------------------
 URL = "https://www.dsebd.org/ajax/load-instrument.php"
@@ -23,51 +38,77 @@ HEADERS = {
 }
 
 # -------------------------
-# DB CONNECTION
+# DB CONNECTION (DEBUG VERSION)
 # -------------------------
-load_dotenv()
-
 print("Connecting to DB...", flush=True)
-conn = psycopg2.connect(os.getenv("DB_URL"))
-cursor = conn.cursor()
-print("Connected to DB ✅", flush=True)
+
+try:
+    conn = psycopg2.connect(db_url)
+    cursor = conn.cursor()
+
+    print("Connected to DB ✅", flush=True)
+
+    cursor.execute("SELECT 1;")
+    print("DB TEST QUERY OK ✅", flush=True)
+
+except Exception as e:
+    print("❌ DB CONNECTION FAILED:", e, flush=True)
+    raise
 
 # -------------------------
-# INSERT FUNCTION
+# INSERT FUNCTION (DEBUG)
 # -------------------------
 def insert_daily(stock, date, open_price, high, low, close, volume):
-    cursor.execute("""
-    INSERT INTO daily_candles (stock, date, open, high, low, close, volume)
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
-    ON CONFLICT (stock, date)
-    DO UPDATE SET
-        open = EXCLUDED.open,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume
-    """, (stock, date, open_price, high, low, close, volume))
+    print(f"DB INSERT → {stock} | {date} | {close}", flush=True)
+
+    try:
+        cursor.execute("""
+        INSERT INTO daily_candles (stock, date, open, high, low, close, volume)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (stock, date)
+        DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            volume = EXCLUDED.volume
+        """, (stock, date, open_price, high, low, close, volume))
+
+        print(f"INSERT OK → {stock}", flush=True)
+
+    except Exception as e:
+        print(f"INSERT FAILED → {stock}: {e}", flush=True)
+        conn.rollback()
 
 # -------------------------
 # FETCH STOCK LIST
 # -------------------------
 def fetch_stocks():
     print("Fetching stock list...", flush=True)
+
     response = requests.get(
         'https://www.dsebd.org/ajax/suggestList.php',
         params={'suggestType': 'tc'},
         cookies=COOKIES,
         headers=HEADERS
     )
+
     stocks = response.json()
+
     print(f"Total stocks fetched: {len(stocks)}", flush=True)
+
     return stocks
 
 # -------------------------
 # FETCH SINGLE STOCK
 # -------------------------
 def fetch_instrument(inst: str) -> str:
-    response = requests.post(URL, data={"inst": inst}, headers=HEADERS, cookies=COOKIES)
+    response = requests.post(
+        URL,
+        data={"inst": inst},
+        headers=HEADERS,
+        cookies=COOKIES
+    )
     response.raise_for_status()
     return response.text
 
@@ -105,8 +146,10 @@ def parse_order_book(html: str) -> dict:
 def save_daily(stock, data):
     price = data["last_price"]
 
+    print(f"Saving {stock} price={price}", flush=True)
+
     if price is None or price == 0:
-        print(f"Skipping {stock} (no price)", flush=True)
+        print(f"Skipping {stock} (invalid price)", flush=True)
         return
 
     today = datetime.now().date().isoformat()
@@ -129,6 +172,8 @@ if __name__ == "__main__":
 
     stocks = fetch_stocks()
 
+    # OPTIONAL TEST MODE
+    # stocks = stocks[:5]
 
     success = 0
     failed = 0
@@ -139,16 +184,19 @@ if __name__ == "__main__":
 
             html = fetch_instrument(stock)
             data = parse_order_book(html)
+
             save_daily(stock, data)
+
             conn.commit()
+
+            print(f"Committed {stock}", flush=True)
 
             success += 1
 
         except Exception as e:
-            print(f"Error {stock}: {e}", flush=True)
-            conn.rollback()  # VERY IMPORTANT
+            print(f"ERROR {stock}: {e}", flush=True)
+            conn.rollback()
             failed += 1
-
 
     print("Finished scraping!", flush=True)
     print(f"Success: {success}, Failed: {failed}", flush=True)
