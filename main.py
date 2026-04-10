@@ -2,98 +2,71 @@ import time
 import requests
 from bs4 import BeautifulSoup
 import re
-import sqlite3
 from datetime import datetime
+import psycopg2
+import os
+from dotenv import load_dotenv
 
 # -------------------------
 # CONFIG
 # -------------------------
 URL = "https://www.dsebd.org/ajax/load-instrument.php"
+
 COOKIES = {'PHPSESSID': 'u1p5h9j3aufgebs88fpa5mf0ak'}
+
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0',
+    'User-Agent': 'Mozilla/5.0',
     'Accept': '*/*',
-    'Accept-Language': 'en-US,en;q=0.9',
     'Referer': 'https://www.dsebd.org/mkt_depth_3.php',
     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
     'X-Requested-With': 'XMLHttpRequest',
-    'Origin': 'https://www.dsebd.org',
-    'Connection': 'keep-alive',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-GPC': '1',
-    'Priority': 'u=0',
 }
 
-DB_FILE = "dse_data.db"
+# -------------------------
+# DB CONNECTION (NEW)
+# -------------------------
+load_dotenv()
+
+conn = psycopg2.connect(os.getenv("DB_URL"))
+cursor = conn.cursor()
 
 # -------------------------
-# DATABASE FUNCTIONS
+# INSERT FUNCTION (UPDATED)
 # -------------------------
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
+def insert_daily(stock, date, open_price, high, low, close, volume):
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS daily_candles (
-        stock TEXT NOT NULL,
-        date DATE NOT NULL,
-        open REAL,
-        high REAL,
-        low REAL,
-        close REAL,
-        volume INTEGER,
-        PRIMARY KEY (stock, date)
+    INSERT INTO daily_candles (stock, date, open, high, low, close, volume)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (stock, date)
+    DO UPDATE SET
+        open = EXCLUDED.open,
+        high = EXCLUDED.high,
+        low = EXCLUDED.low,
+        close = EXCLUDED.close,
+        volume = EXCLUDED.volume
+    """, (stock, date, open_price, high, low, close, volume))
+
+    conn.commit()
+
+# -------------------------
+# FETCH STOCK LIST
+# -------------------------
+def fetch_stocks():
+    response = requests.get(
+        'https://www.dsebd.org/ajax/suggestList.php',
+        params={'suggestType': 'tc'},
+        cookies=COOKIES,
+        headers=HEADERS
     )
-    """)
-    conn.commit()
-    conn.close()
-
-def insert_daily(stock, date, open, high, low, close, volume):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-    INSERT OR REPLACE INTO daily_candles
-    (stock, date, open, high, low, close, volume)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (stock, date, open, high, low, close, volume))
-    conn.commit()
-    conn.close()
+    return response.json()
 
 # -------------------------
-# HTTP REQUEST
+# FETCH SINGLE STOCK HTML
 # -------------------------
 def fetch_instrument(inst: str) -> str:
     response = requests.post(URL, data={"inst": inst}, headers=HEADERS, cookies=COOKIES)
     response.raise_for_status()
     return response.text
-
-def fetch_stocks():
-    cookies = {
-        'PHPSESSID': 'u1p5h9j3aufgebs88fpa5mf0ak',
-    }
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        # 'Accept-Encoding': 'gzip, deflate, br, zstd',
-        'Referer': 'https://www.dsebd.org/latest_share_price_scroll_l.php',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Connection': 'keep-alive',
-        # 'Cookie': 'PHPSESSID=u1p5h9j3aufgebs88fpa5mf0ak',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-GPC': '1',
-    }
-
-    params = {
-        'suggestType': 'tc',
-    }
-
-    response = requests.get('https://www.dsebd.org/ajax/suggestList.php', params=params, cookies=cookies, headers=headers)
-    return response.json()
 
 # -------------------------
 # PARSE HTML
@@ -102,7 +75,7 @@ def parse_order_book(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
 
-    def extract_table(table) -> list:
+    def extract_table(table):
         result = []
         for row in table.find_all("tr"):
             cols = row.find_all("td")
@@ -119,85 +92,53 @@ def parse_order_book(html: str) -> dict:
     match = re.search(r"Last Trade Price\s*:\s*(\d+\.?\d*)", text)
     last_price = float(match.group(1)) if match else None
 
-    # total traded volume (sum of buy + sell)
     total_volume = sum([b["volume"] for b in buy] + [s["volume"] for s in sell])
 
-    return {"buy": buy, "sell": sell, "last_price": last_price, "volume": total_volume}
+    return {"last_price": last_price, "volume": total_volume}
 
 # -------------------------
-# BUILD CANDLE
+# BUILD CANDLE (SIMPLIFIED)
 # -------------------------
-def update_candles(candles: dict, price: float) -> dict:
-    current_time = int(time.time())
-    minute = current_time - (current_time % 60)
-
-    if minute not in candles:
-        candles[minute] = {
-            "time": minute,
-            "open": price,
-            "high": price,
-            "low": price,
-            "close": price
-        }
-    else:
-        c = candles[minute]
-        c["high"] = max(c["high"], price)
-        c["low"] = min(c["low"], price)
-        c["close"] = price
-
-    return candles
+def build_daily_candle(price):
+    return {
+        "open": price,
+        "high": price,
+        "low": price,
+        "close": price
+    }
 
 # -------------------------
-# MAIN FUNCTION
+# SAVE DAILY
 # -------------------------
-def run(inst: str, candles: dict):
-    html = fetch_instrument(inst)
-    data = parse_order_book(html)
-    candles = update_candles(candles, data["last_price"])
-    data["candles"] = candles
-    return data
+def save_daily(stock, data):
+    price = data["last_price"]
 
-# -------------------------
-# DAILY OHLC INSERT
-# -------------------------
-def save_daily_ohlc(inst: str, candles: dict):
-    if not candles:
+    if price is None or price == 0:
         return
 
-    # Get latest candle of the day
-    last_minute = max(candles.keys())
-    c = candles[last_minute]
+    candle = build_daily_candle(price)
 
-    # Skip if no valid price
-    if c["close"] is None or c["close"] == 0:
-        return  # don't store this candle
-
-
-    today = datetime.now().date()
     insert_daily(
-        stock=inst,
-        date=today.isoformat(),
-        open=c["open"],
-        high=c["high"],
-        low=c["low"],
-        close=c["close"],
-        volume=0  # optional: you can sum buy/sell volumes here if needed
+        stock=stock,
+        date=datetime.now().date().isoformat(),
+        open_price=candle["open"],
+        high=candle["high"],
+        low=candle["low"],
+        close=candle["close"],
+        volume=data["volume"]
     )
 
 # -------------------------
-# SCRIPT ENTRY POINT
+# MAIN
 # -------------------------
 if __name__ == "__main__":
-    init_db()
     stocks = fetch_stocks()
+
     for stock in stocks:
         try:
-            result = run(stock, {})
-            save_daily_ohlc(stock, result["candles"])
+            html = fetch_instrument(stock)
+            data = parse_order_book(html)
+            save_daily(stock, data)
             print(f"Saved {stock}")
         except Exception as e:
             print(f"Error {stock}: {e}")
-
-
-
-    
