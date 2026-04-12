@@ -1,8 +1,11 @@
+from collections import defaultdict
 from flask import Flask, jsonify
 from flask_cors import CORS
 from psycopg2 import pool
 from dotenv import load_dotenv
 import os
+from datetime import datetime
+import pytz
 
 # -------------------------
 # INIT APP
@@ -58,6 +61,41 @@ def query_daily(stock):
         cursor.close()
         db_pool.putconn(conn)   
 
+
+
+bd_tz = pytz.timezone("Asia/Dhaka")
+
+def to_weekly(candles):
+    weekly = defaultdict(list)
+
+    for c in candles:
+        dt = datetime.fromisoformat(str(c["date"]))
+
+        # force BD time
+        if dt.tzinfo is None:
+            dt = bd_tz.localize(dt)
+        else:
+            dt = dt.astimezone(bd_tz)
+
+        year, week, _ = dt.isocalendar()
+        weekly[(year, week)].append(c)
+
+    result = []
+
+    for (_, _), days in weekly.items():
+        days.sort(key=lambda x: x["date"])
+
+        result.append({
+            "date": days[0]["date"],
+            "open": days[0]["open"],
+            "high": max(d["high"] for d in days),
+            "low": min(d["low"] for d in days),
+            "close": days[-1]["close"],
+            "volume": sum(d["volume"] for d in days),
+        })
+
+    result.sort(key=lambda x: x["date"])
+    return result
 # -------------------------
 # API ROUTE
 # -------------------------
@@ -69,15 +107,15 @@ def get_stock(stock):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# -------------------------
-# CLEAN SHUTDOWN 
-# -------------------------
-@app.teardown_appcontext
-def close_pool(exception=None):
+
+@app.route("/api/<stock>/weekly")
+def get_stock_weekly(stock):
     try:
-        db_pool.closeall()
-    except:
-        pass
+        data = query_daily(stock)
+        weekly = to_weekly(data)
+        return jsonify(weekly)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # -------------------------
 # RUN SERVER
