@@ -1,4 +1,4 @@
-import time
+import random
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -28,7 +28,7 @@ print("DB_URL preview:", str(db_url)[:50], flush=True)
 # -------------------------
 URL = "https://www.dsebd.org/ajax/load-instrument.php"
 
-COOKIES = {'PHPSESSID': 'u1p5h9j3aufgebs88fpa5mf0ak'}
+COOKIES = None
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0',
@@ -37,6 +37,7 @@ HEADERS = {
     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
     'X-Requested-With': 'XMLHttpRequest',
 }
+HEADERS["User-Agent"] = f"Mozilla/5.0 ({random.randint(1,10000)})"
 
 # -------------------------
 # DB CONNECTION (DEBUG VERSION)
@@ -68,11 +69,10 @@ def insert_daily(stock, date, open_price, high, low, close, volume):
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (stock, date)
         DO UPDATE SET
-            open = EXCLUDED.open,
-            high = EXCLUDED.high,
-            low = EXCLUDED.low,
+            high = GREATEST(EXCLUDED.high, daily_candles.high),
+            low = LEAST(EXCLUDED.low, daily_candles.low),
             close = EXCLUDED.close,
-            volume = EXCLUDED.volume
+            volume = EXCLUDED.volume + daily_candles.volume
         """, (stock, date, open_price, high, low, close, volume))
 
         print(f"INSERT OK → {stock}", flush=True)
@@ -104,11 +104,11 @@ def fetch_stocks():
 # FETCH SINGLE STOCK
 # -------------------------
 def fetch_instrument(inst: str) -> str:
-    response = requests.post(
+    session = requests.Session()
+    response = session.post(
         URL,
         data={"inst": inst},
-        headers=HEADERS,
-        cookies=COOKIES
+        headers=HEADERS
     )
     response.raise_for_status()
     return response.text
@@ -174,8 +174,6 @@ if __name__ == "__main__":
 
     stocks = fetch_stocks()
 
-    # OPTIONAL TEST MODE
-    # stocks = stocks[:5]
 
     success = 0
     failed = 0
