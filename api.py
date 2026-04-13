@@ -4,7 +4,7 @@ from flask_cors import CORS
 from psycopg2 import pool
 from dotenv import load_dotenv
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # -------------------------
@@ -77,12 +77,17 @@ def to_weekly(candles):
         else:
             dt = dt.astimezone(bd_tz)
 
-        year, week, _ = dt.isocalendar()
-        weekly[(year, week)].append(c)
+       # Saturday start week
+        WEEK_START = 5  # Saturday
+        weekday = dt.weekday()
+
+        start_of_week = dt - timedelta(days=(weekday - WEEK_START) % 7)
+
+        weekly[start_of_week.date()].append(c)
 
     result = []
 
-    for (_, _), days in weekly.items():
+    for week_start, days in sorted(weekly.items()):
         days.sort(key=lambda x: x["date"])
 
         result.append({
