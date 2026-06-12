@@ -80,6 +80,7 @@ def insert_daily(stock, date, open_price, high, low, close, volume):
     except Exception as e:
         print(f"INSERT FAILED → {stock}: {e}", flush=True)
         conn.rollback()
+        
 
 # -------------------------
 # FETCH STOCK LIST

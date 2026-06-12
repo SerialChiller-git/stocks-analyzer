@@ -29,7 +29,7 @@ db_pool = pool.SimpleConnectionPool(
 )
 
 # -------------------------
-# QUERY FUNCTION
+# QUERY FUNCTION ...
 # -------------------------
 def query_daily(stock):
     conn = db_pool.getconn()
