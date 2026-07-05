@@ -16,8 +16,6 @@ print("🚀 Script started", flush=True)
 load_dotenv()
 db_url = os.getenv("DB_URL")
 
-print("DB_URL exists:", db_url is not None, flush=True)
-
 session = requests.Session()
 session.verify = False
 
@@ -31,7 +29,7 @@ HEADERS = {
 URL = "https://www.dsebd.org/ajax/load-instrument.php"
 
 # -------------------------
-# DB CONNECTION
+# DB
 # -------------------------
 print("Connecting to DB...", flush=True)
 
@@ -39,7 +37,6 @@ conn = psycopg2.connect(db_url)
 cursor = conn.cursor()
 
 print("Connected to DB ✅", flush=True)
-
 cursor.execute("SELECT 1;")
 print("DB TEST OK ✅", flush=True)
 
@@ -60,17 +57,49 @@ def insert_daily(stock, date, open_price, high, low, close, volume):
         """, (stock, date, open_price, high, low, close, volume))
     except Exception as e:
         conn.rollback()
-        print("INSERT ERROR:", e, flush=True)
+        print("INSERT ERROR:", stock, e, flush=True)
 
 # -------------------------
-# STOCK LIST (FIXED SAFE)
+# REAL STOCK LIST (OPTION 2)
 # -------------------------
 def fetch_stocks():
-    return [
-        "GP", "BRACBANK", "BATBC", "SQURPHARMA",
-        "UPGDCL", "ISLAMIBANK", "RENATA", "LHBL",
-        "OLYMPIC", "WALTONHIL"
-    ]
+    print("Fetching REAL stock list...", flush=True)
+
+    try:
+        r = requests.get(
+            "https://www.dsebd.org/ajax/suggestList.php",
+            params={"suggestType": "tc"},
+            timeout=10,
+            verify=False
+        )
+
+        data = r.json()
+
+        stocks = []
+
+        for item in data:
+            if isinstance(item, dict):
+                stocks.append(item.get("value") or item.get("label"))
+            elif isinstance(item, str):
+                stocks.append(item)
+
+        stocks = list(set([s for s in stocks if s]))
+
+        print(f"Total stocks fetched: {len(stocks)}", flush=True)
+
+        if len(stocks) < 50:
+            raise Exception("Too few stocks fetched, fallback triggered")
+
+        return stocks
+
+    except Exception as e:
+        print("Stock fetch failed, using fallback:", e, flush=True)
+
+        return [
+            "GP", "BRACBANK", "BATBC", "SQURPHARMA",
+            "UPGDCL", "ISLAMIBANK", "RENATA", "LHBL",
+            "OLYMPIC", "WALTONHIL"
+        ]
 
 # -------------------------
 # FETCH INSTRUMENT
@@ -144,6 +173,8 @@ if __name__ == "__main__":
 
     stocks = fetch_stocks()
 
+    print("TOTAL STOCKS:", len(stocks), flush=True)
+
     success = 0
     failed = 0
 
@@ -158,7 +189,7 @@ if __name__ == "__main__":
 
             conn.commit()
 
-            print(f"Saved {stock}", flush=True)
+            print("Saved:", stock, flush=True)
             success += 1
 
         except Exception as e:
