@@ -21,6 +21,7 @@ jobs:
           sudo apt-get install -y ca-certificates
           sudo update-ca-certificates
           pip install -r requirements.txt
+          pip install --upgrade certifi
 
       - name: Run scraper
         env:
