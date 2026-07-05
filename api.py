@@ -1,81 +1,132 @@
-import requests
-import certifi
-import urllib3
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from collections import defaultdict
+from flask import Flask, jsonify
+from flask_cors import CORS
+from psycopg2 import pool
+from dotenv import load_dotenv
+import os
+from datetime import datetime, timedelta
+import pytz
 
 # -------------------------
-# Disable insecure warnings (for fallback SSL)
+# INIT APP
 # -------------------------
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+app = Flask(__name__)
+CORS(app)
 
 # -------------------------
-# CREATE SAFE SESSION
+# LOAD ENV
 # -------------------------
-session = requests.Session()
+load_dotenv()
+DB_URL = os.getenv("DB_URL")
 
-retry = Retry(
-    total=3,
-    backoff_factor=1,
-    status_forcelist=[500, 502, 503, 504],
-    allowed_methods=["GET"]
+# -------------------------
+# CONNECTION POOL
+# -------------------------
+db_pool = pool.SimpleConnectionPool(
+    1,   # min connections
+    10,  # max connections
+    DB_URL
 )
 
-adapter = HTTPAdapter(max_retries=retry)
-
-session.mount("https://", adapter)
-session.mount("http://", adapter)
-
 # -------------------------
-# SAFE REQUEST FUNCTION
+# QUERY FUNCTION ...
 # -------------------------
-def safe_get(url, params=None):
+def query_daily(stock):
+    conn = db_pool.getconn()
+    cursor = conn.cursor()
+
     try:
-        return session.get(
-            url,
-            params=params,
-            timeout=10,
-            verify=certifi.where()   # ✅ FIX SSL
-        )
+        cursor.execute("""
+            SELECT date, open, high, low, close, volume
+            FROM daily_candles
+            WHERE stock = %s
+            ORDER BY date ASC
+        """, (stock,))
 
-    except requests.exceptions.SSLError:
-        # fallback if DSE SSL is broken
-        return session.get(
-            url,
-            params=params,
-            timeout=10,
-            verify=False
-        )
+        rows = cursor.fetchall()
+
+        return [
+            {
+                "date": r[0],
+                "open": r[1],
+                "high": r[2],
+                "low": r[3],
+                "close": r[4],
+                "volume": r[5]
+            }
+            for r in rows
+        ]
+
+    finally:
+        cursor.close()
+        db_pool.putconn(conn)   
+
+
+
+bd_tz = pytz.timezone("Asia/Dhaka")
+
+def to_weekly(candles):
+    weekly = defaultdict(list)
+
+    for c in candles:
+        dt = datetime.fromisoformat(str(c["date"]))
+
+        # force BD time
+        if dt.tzinfo is None:
+            dt = bd_tz.localize(dt)
+        else:
+            dt = dt.astimezone(bd_tz)
+
+       # Saturday start week
+        WEEK_START = 5  # Saturday
+        weekday = dt.weekday()
+
+        start_of_week = dt - timedelta(days=(weekday - WEEK_START) % 7)
+
+        weekly[start_of_week.date()].append(c)
+
+    result = []
+
+    for week_start, days in sorted(weekly.items()):
+        days.sort(key=lambda x: x["date"])
+
+        result.append({
+            "date": days[0]["date"],
+            "open": days[0]["open"],
+            "high": max(d["high"] for d in days),
+            "low": min(d["low"] for d in days),
+            "close": days[-1]["close"],
+            "volume": sum(d["volume"] for d in days),
+        })
+
+    result.sort(key=lambda x: x["date"])
+    return result
+# -------------------------
+# API ROUTE
+# -------------------------
+@app.route("/api/<stock>")
+def get_stock(stock):
+    try:
+        data = query_daily(stock)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/<stock>/weekly")
+def get_stock_weekly(stock):
+    try:
+        data = query_daily(stock)
+        weekly = to_weekly(data)
+        return jsonify(weekly)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # -------------------------
-# FETCH STOCK LIST (FIXED)
-# -------------------------
-def fetch_stocks():
-    print("Fetching stock list...")
-
-    url = "https://www.dsebd.org/ajax/suggestList.php"
-
-    response = safe_get(
-        url,
-        params={"suggestType": "tc"}
-    )
-
-    response.raise_for_status()
-
-    data = response.text
-
-    # ⚠️ You may need to adjust parsing depending on actual response format
-    print("Raw response preview:", data[:200])
-
-    return data
-
-
-# -------------------------
-# MAIN RUN
+# RUN SERVER
 # -------------------------
 if __name__ == "__main__":
-    print("🚀 Scraper started")
+    app.run(host="0.0.0.0", port=5000, debug=True)
 
-    stocks = fetch_stocks()
 
-    print("Done ✔")
+this is my code bro
