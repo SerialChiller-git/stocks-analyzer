@@ -7,62 +7,59 @@ import psycopg2
 import os
 from dotenv import load_dotenv
 import pytz
+import certifi
+import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# -------------------------
-# START DEBUG
-# -------------------------
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 print("🚀 Script started", flush=True)
 
-# -------------------------
-# LOAD ENV
-# -------------------------
 load_dotenv()
-
 db_url = os.getenv("DB_URL")
 
 print("DB_URL exists:", db_url is not None, flush=True)
 print("DB_URL preview:", str(db_url)[:50], flush=True)
 
 # -------------------------
-# CONFIG
+# SESSION (FIXED)
 # -------------------------
-URL = "https://www.dsebd.org/ajax/load-instrument.php"
+session = requests.Session()
 
-COOKIES = None
+retry = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504],
+    allowed_methods=["GET", "POST"]
+)
+
+adapter = HTTPAdapter(max_retries=retry)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0',
-    'Accept': '*/*',
-    'Referer': 'https://www.dsebd.org/mkt_depth_3.php',
-    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    'X-Requested-With': 'XMLHttpRequest',
+    "User-Agent": f"Mozilla/5.0 ({random.randint(1,10000)})",
+    "Accept": "*/*",
+    "Referer": "https://www.dsebd.org/mkt_depth_3.php",
+    "X-Requested-With": "XMLHttpRequest",
 }
-HEADERS["User-Agent"] = f"Mozilla/5.0 ({random.randint(1,10000)})"
+
+URL = "https://www.dsebd.org/ajax/load-instrument.php"
 
 # -------------------------
-# DB CONNECTION (DEBUG VERSION)
+# DB
 # -------------------------
 print("Connecting to DB...", flush=True)
 
-try:
-    conn = psycopg2.connect(db_url)
-    cursor = conn.cursor()
+conn = psycopg2.connect(db_url)
+cursor = conn.cursor()
 
-    print("Connected to DB ✅", flush=True)
+print("Connected to DB ✅", flush=True)
+cursor.execute("SELECT 1;")
+print("DB TEST OK ✅", flush=True)
 
-    cursor.execute("SELECT 1;")
-    print("DB TEST QUERY OK ✅", flush=True)
-
-except Exception as e:
-    print("❌ DB CONNECTION FAILED:", e, flush=True)
-    raise
-
-# -------------------------
-# INSERT FUNCTION (DEBUG)
-# -------------------------
 def insert_daily(stock, date, open_price, high, low, close, volume):
-    print(f"DB INSERT → {stock} | {date} | {close}", flush=True)
-
     try:
         cursor.execute("""
         INSERT INTO daily_candles (stock, date, open, high, low, close, volume)
@@ -74,65 +71,76 @@ def insert_daily(stock, date, open_price, high, low, close, volume):
             close = EXCLUDED.close,
             volume = EXCLUDED.volume + daily_candles.volume
         """, (stock, date, open_price, high, low, close, volume))
-
-        print(f"INSERT OK → {stock}", flush=True)
-
     except Exception as e:
-        print(f"INSERT FAILED → {stock}: {e}", flush=True)
         conn.rollback()
-        
+        print("INSERT ERROR:", e, flush=True)
 
 # -------------------------
-# FETCH STOCK LIST
+# SAFE REQUEST
+# -------------------------
+def safe_get(url, params=None):
+    try:
+        return session.get(url, params=params, timeout=10, verify=certifi.where())
+    except:
+        return session.get(url, params=params, timeout=10, verify=False)
+
+# -------------------------
+# STOCK LIST
 # -------------------------
 def fetch_stocks():
     print("Fetching stock list...", flush=True)
 
-    response = requests.get(
-        'https://www.dsebd.org/ajax/suggestList.php',
-        params={'suggestType': 'tc'},
-        cookies=COOKIES,
-        headers=HEADERS
+    r = safe_get(
+        "https://www.dsebd.org/ajax/suggestList.php",
+        {"suggestType": "tc"}
     )
 
-    stocks = response.json()
-
-    print(f"Total stocks fetched: {len(stocks)}", flush=True)
-
-    return stocks
+    try:
+        return r.json()
+    except:
+        return []
 
 # -------------------------
-# FETCH SINGLE STOCK
+# INSTRUMENT FETCH
 # -------------------------
-def fetch_instrument(inst: str) -> str:
-    session = requests.Session()
-    response = session.post(
+def fetch_instrument(inst):
+    r = session.post(
         URL,
         data={"inst": inst},
-        headers=HEADERS
+        headers=HEADERS,
+        timeout=10,
+        verify=certifi.where()
     )
-    response.raise_for_status()
-    return response.text
+    return r.text
 
 # -------------------------
-# PARSE HTML
+# PARSER (SAFE)
 # -------------------------
-def parse_order_book(html: str) -> dict:
+def parse_order_book(html):
     soup = BeautifulSoup(html, "html.parser")
+
     tables = soup.find_all("table")
 
-    def extract_table(table):
+    def extract(table):
         result = []
+        if not table:
+            return result
+
         for row in table.find_all("tr"):
             cols = row.find_all("td")
             if len(cols) == 2:
-                price, volume = cols[0].get_text(strip=True), cols[1].get_text(strip=True)
-                if price.replace('.', '', 1).isdigit():
-                    result.append({"price": float(price), "volume": int(volume)})
+                p = cols[0].get_text(strip=True)
+                v = cols[1].get_text(strip=True)
+
+                if p.replace(".", "", 1).isdigit():
+                    result.append({
+                        "price": float(p),
+                        "volume": int(v) if v.isdigit() else 0
+                    })
         return result
 
-    buy = extract_table(tables[2])
-    sell = extract_table(tables[3])
+    buy = extract(tables[2]) if len(tables) > 2 else []
+    sell = extract(tables[3]) if len(tables) > 3 else []
 
     text = soup.get_text()
     match = re.search(r"Last Trade Price\s*:\s*(\d+\.?\d*)", text)
@@ -143,29 +151,18 @@ def parse_order_book(html: str) -> dict:
     return {"last_price": last_price, "volume": total_volume}
 
 # -------------------------
-# SAVE DAILY
+# SAVE
 # -------------------------
 def save_daily(stock, data):
     price = data["last_price"]
 
-    print(f"Saving {stock} price={price}", flush=True)
-
-    if price is None or price == 0:
-        print(f"Skipping {stock} (invalid price)", flush=True)
+    if not price:
         return
 
-    bd_tz = pytz.timezone("Asia/Dhaka")
-    today = datetime.now(bd_tz).date().isoformat()
+    bd = pytz.timezone("Asia/Dhaka")
+    today = datetime.now(bd).date().isoformat()
 
-    insert_daily(
-        stock=stock,
-        date=today,
-        open_price=price,
-        high=price,
-        low=price,
-        close=price,
-        volume=data["volume"]
-    )
+    insert_daily(stock, today, price, price, price, price, data["volume"])
 
 # -------------------------
 # MAIN
@@ -175,13 +172,12 @@ if __name__ == "__main__":
 
     stocks = fetch_stocks()
 
-
     success = 0
     failed = 0
 
     for i, stock in enumerate(stocks):
         try:
-            print(f"[{i+1}/{len(stocks)}] Processing {stock}", flush=True)
+            print(f"[{i+1}] {stock}", flush=True)
 
             html = fetch_instrument(stock)
             data = parse_order_book(html)
@@ -190,14 +186,15 @@ if __name__ == "__main__":
 
             conn.commit()
 
-            print(f"Committed {stock}", flush=True)
-
             success += 1
 
         except Exception as e:
-            print(f"ERROR {stock}: {e}", flush=True)
             conn.rollback()
+            print("ERROR:", stock, e, flush=True)
             failed += 1
 
-    print("Finished scraping!", flush=True)
-    print(f"Success: {success}, Failed: {failed}", flush=True)
+    print("DONE", flush=True)
+    print("Success:", success, "Failed:", failed, flush=True)
+
+    cursor.close()
+    conn.close()
