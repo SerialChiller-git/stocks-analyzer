@@ -7,7 +7,6 @@ import psycopg2
 import os
 from dotenv import load_dotenv
 import pytz
-import certifi
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -19,6 +18,9 @@ db_url = os.getenv("DB_URL")
 
 print("DB_URL exists:", db_url is not None, flush=True)
 
+session = requests.Session()
+session.verify = False
+
 HEADERS = {
     "User-Agent": f"Mozilla/5.0 ({random.randint(1,10000)})",
     "Accept": "*/*",
@@ -27,8 +29,6 @@ HEADERS = {
 }
 
 URL = "https://www.dsebd.org/ajax/load-instrument.php"
-
-session = requests.Session()
 
 # -------------------------
 # DB CONNECTION
@@ -44,7 +44,7 @@ cursor.execute("SELECT 1;")
 print("DB TEST OK ✅", flush=True)
 
 # -------------------------
-# INSERT FUNCTION
+# INSERT
 # -------------------------
 def insert_daily(stock, date, open_price, high, low, close, volume):
     try:
@@ -59,16 +59,13 @@ def insert_daily(stock, date, open_price, high, low, close, volume):
             volume = EXCLUDED.volume + daily_candles.volume
         """, (stock, date, open_price, high, low, close, volume))
     except Exception as e:
-        print("INSERT ERROR:", e, flush=True)
         conn.rollback()
+        print("INSERT ERROR:", e, flush=True)
 
 # -------------------------
-# FIXED STOCK LIST (NO MORE 0 BUG)
+# STOCK LIST (FIXED SAFE)
 # -------------------------
 def fetch_stocks():
-    print("Fetching stock list (SAFE MODE)...", flush=True)
-
-    # fallback stable list (DSE symbols)
     return [
         "GP", "BRACBANK", "BATBC", "SQURPHARMA",
         "UPGDCL", "ISLAMIBANK", "RENATA", "LHBL",
@@ -83,17 +80,15 @@ def fetch_instrument(inst):
         URL,
         data={"inst": inst},
         headers=HEADERS,
-        timeout=10,
-        verify=certifi.where()
+        timeout=10
     )
     return r.text
 
 # -------------------------
-# PARSER
+# PARSE
 # -------------------------
 def parse_order_book(html):
     soup = BeautifulSoup(html, "html.parser")
-
     tables = soup.find_all("table")
 
     def extract(table):
@@ -129,11 +124,10 @@ def parse_order_book(html):
     }
 
 # -------------------------
-# SAVE DAILY
+# SAVE
 # -------------------------
 def save_daily(stock, data):
     price = data["last_price"]
-
     if not price:
         return
 
@@ -149,8 +143,6 @@ if __name__ == "__main__":
     print("Starting scraper...", flush=True)
 
     stocks = fetch_stocks()
-
-    print(f"Total stocks: {len(stocks)}", flush=True)
 
     success = 0
     failed = 0
