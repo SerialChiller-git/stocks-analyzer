@@ -29,16 +29,43 @@ HEADERS = {
 URL = "https://www.dsebd.org/ajax/load-instrument.php"
 
 # -------------------------
+# YOUR STOCK LIST (CLEAN)
+# -------------------------
+def fetch_stocks():
+    return [
+        "TB5Y0430","TB2Y0227","LRBDL","AMBEEPHA","SALVO","JAMUNAOIL",
+        "FBFIF","TB2Y0826","AMCL(PRAN)","ITC","RINGSHINE","ACTIVEFINE",
+        "ECABLES","EPGL","TB10Y0535","TB2Y1126","APEXFOODS","ICB",
+        "AZIZPIPES","GLOBALINS","TB5Y1029","ALLTEX","AIBL1STIMF",
+        "AFTABAUTO","SBACBANK","PF1STMF","PREMIERLEA","SSSTEEL",
+        "ADVENT","KPPL","RAHIMAFOOD","CENTRALPHL","TB15Y0340",
+        "TB10Y1135","EASTERNINS","ARGONDENIM","PARAMOUNT",
+        "BEACONPHAR","ACI","TB2Y1026","TB20Y1242","HFL","YPL",
+        "MLDYEING","BDTHAIFOOD","MITHUNKNIT","1JANATAMF","TAMIJTEX",
+        "TB2Y0727","DAFODILCOM","PENINSULA","GHAIL","GPHISPAT",
+        "ATLASBANG","DESCO","KTL","SEMLIBBLSF","PRIMETEX",
+        "USMANIAGL","BENGALWTL","TB10Y0234","SEAPEARL","DGIC",
+        "RENWICKJA","PHOENIXFIN","MHSML","FIRSTFIN","AOL",
+        "TB10Y0434","CAPITECGBF","BAYLEASING","SKTRIMS","GP",
+        "MBL1STMF","CITYBANK","PHARMAID","NCCBLMF1","CROWNCEMNT",
+        "CAPMBDBLMF","RUPALIBANK","ANWARGALV","RUPALILIFE",
+        "SAMATALETH","ICBAMCL2ND","NRBCBANK","APOLOISPAT",
+        "MIRAKHTER","SAPORTL","UNIONCAP","MATINSPINN",
+        "SOUTHEASTB","AAMRATECH","ESQUIRENIT","CRYSTALINS",
+        "JUTESPINN","ICBSONALI1","SONARGAON","MIDASFIN",
+        "REPUBLIC","EBL1STMF"
+    ]
+
+# -------------------------
 # DB
 # -------------------------
-print("Connecting to DB...", flush=True)
+print("Connecting DB...", flush=True)
 
 conn = psycopg2.connect(db_url)
 cursor = conn.cursor()
 
-print("Connected to DB ✅", flush=True)
+print("DB connected ✅", flush=True)
 cursor.execute("SELECT 1;")
-print("DB TEST OK ✅", flush=True)
 
 # -------------------------
 # INSERT
@@ -57,52 +84,10 @@ def insert_daily(stock, date, open_price, high, low, close, volume):
         """, (stock, date, open_price, high, low, close, volume))
     except Exception as e:
         conn.rollback()
-        print("INSERT ERROR:", stock, e, flush=True)
+        print("DB ERROR:", stock, e, flush=True)
 
 # -------------------------
-# REAL STOCK LIST (OPTION 2)
-# -------------------------
-def fetch_stocks():
-    print("Fetching REAL stock list...", flush=True)
-
-    try:
-        r = requests.get(
-            "https://www.dsebd.org/ajax/suggestList.php",
-            params={"suggestType": "tc"},
-            timeout=10,
-            verify=False
-        )
-
-        data = r.json()
-
-        stocks = []
-
-        for item in data:
-            if isinstance(item, dict):
-                stocks.append(item.get("value") or item.get("label"))
-            elif isinstance(item, str):
-                stocks.append(item)
-
-        stocks = list(set([s for s in stocks if s]))
-
-        print(f"Total stocks fetched: {len(stocks)}", flush=True)
-
-        if len(stocks) < 50:
-            raise Exception("Too few stocks fetched, fallback triggered")
-
-        return stocks
-
-    except Exception as e:
-        print("Stock fetch failed, using fallback:", e, flush=True)
-
-        return [
-            "GP", "BRACBANK", "BATBC", "SQURPHARMA",
-            "UPGDCL", "ISLAMIBANK", "RENATA", "LHBL",
-            "OLYMPIC", "WALTONHIL"
-        ]
-
-# -------------------------
-# FETCH INSTRUMENT
+# FETCH PRICE
 # -------------------------
 def fetch_instrument(inst):
     r = session.post(
@@ -121,9 +106,9 @@ def parse_order_book(html):
     tables = soup.find_all("table")
 
     def extract(table):
-        result = []
+        res = []
         if not table:
-            return result
+            return res
 
         for row in table.find_all("tr"):
             cols = row.find_all("td")
@@ -132,11 +117,11 @@ def parse_order_book(html):
                 v = cols[1].get_text(strip=True)
 
                 if p.replace(".", "", 1).isdigit():
-                    result.append({
+                    res.append({
                         "price": float(p),
                         "volume": int(v) if v.isdigit() else 0
                     })
-        return result
+        return res
 
     buy = extract(tables[2]) if len(tables) > 2 else []
     sell = extract(tables[3]) if len(tables) > 3 else []
@@ -145,17 +130,14 @@ def parse_order_book(html):
     match = re.search(r"Last Trade Price\s*:\s*(\d+\.?\d*)", text)
     last_price = float(match.group(1)) if match else None
 
-    total_volume = sum([b["volume"] for b in buy] + [s["volume"] for s in sell])
+    volume = sum([b["volume"] for b in buy] + [s["volume"] for s in sell])
 
-    return {
-        "last_price": last_price,
-        "volume": total_volume
-    }
+    return {"last_price": last_price, "volume": volume}
 
 # -------------------------
 # SAVE
 # -------------------------
-def save_daily(stock, data):
+def save(stock, data):
     price = data["last_price"]
     if not price:
         return
@@ -173,7 +155,7 @@ if __name__ == "__main__":
 
     stocks = fetch_stocks()
 
-    print("TOTAL STOCKS:", len(stocks), flush=True)
+    print("Total stocks:", len(stocks), flush=True)
 
     success = 0
     failed = 0
@@ -185,7 +167,7 @@ if __name__ == "__main__":
             html = fetch_instrument(stock)
             data = parse_order_book(html)
 
-            save_daily(stock, data)
+            save(stock, data)
 
             conn.commit()
 
@@ -200,5 +182,5 @@ if __name__ == "__main__":
     cursor.close()
     conn.close()
 
-    print("DONE ✔", flush=True)
-    print("Success:", success, "Failed:", failed, flush=True)
+    print("DONE ✔")
+    print("Success:", success, "Failed:", failed)
