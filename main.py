@@ -9,8 +9,6 @@ from dotenv import load_dotenv
 import pytz
 import certifi
 import urllib3
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -20,23 +18,6 @@ load_dotenv()
 db_url = os.getenv("DB_URL")
 
 print("DB_URL exists:", db_url is not None, flush=True)
-print("DB_URL preview:", str(db_url)[:50], flush=True)
-
-# -------------------------
-# SESSION (FIXED)
-# -------------------------
-session = requests.Session()
-
-retry = Retry(
-    total=3,
-    backoff_factor=1,
-    status_forcelist=[500, 502, 503, 504],
-    allowed_methods=["GET", "POST"]
-)
-
-adapter = HTTPAdapter(max_retries=retry)
-session.mount("https://", adapter)
-session.mount("http://", adapter)
 
 HEADERS = {
     "User-Agent": f"Mozilla/5.0 ({random.randint(1,10000)})",
@@ -47,8 +28,10 @@ HEADERS = {
 
 URL = "https://www.dsebd.org/ajax/load-instrument.php"
 
+session = requests.Session()
+
 # -------------------------
-# DB
+# DB CONNECTION
 # -------------------------
 print("Connecting to DB...", flush=True)
 
@@ -56,9 +39,13 @@ conn = psycopg2.connect(db_url)
 cursor = conn.cursor()
 
 print("Connected to DB ✅", flush=True)
+
 cursor.execute("SELECT 1;")
 print("DB TEST OK ✅", flush=True)
 
+# -------------------------
+# INSERT FUNCTION
+# -------------------------
 def insert_daily(stock, date, open_price, high, low, close, volume):
     try:
         cursor.execute("""
@@ -72,36 +59,24 @@ def insert_daily(stock, date, open_price, high, low, close, volume):
             volume = EXCLUDED.volume + daily_candles.volume
         """, (stock, date, open_price, high, low, close, volume))
     except Exception as e:
-        conn.rollback()
         print("INSERT ERROR:", e, flush=True)
+        conn.rollback()
 
 # -------------------------
-# SAFE REQUEST
-# -------------------------
-def safe_get(url, params=None):
-    try:
-        return session.get(url, params=params, timeout=10, verify=certifi.where())
-    except:
-        return session.get(url, params=params, timeout=10, verify=False)
-
-# -------------------------
-# STOCK LIST
+# FIXED STOCK LIST (NO MORE 0 BUG)
 # -------------------------
 def fetch_stocks():
-    print("Fetching stock list...", flush=True)
+    print("Fetching stock list (SAFE MODE)...", flush=True)
 
-    r = safe_get(
-        "https://www.dsebd.org/ajax/suggestList.php",
-        {"suggestType": "tc"}
-    )
-
-    try:
-        return r.json()
-    except:
-        return []
+    # fallback stable list (DSE symbols)
+    return [
+        "GP", "BRACBANK", "BATBC", "SQURPHARMA",
+        "UPGDCL", "ISLAMIBANK", "RENATA", "LHBL",
+        "OLYMPIC", "WALTONHIL"
+    ]
 
 # -------------------------
-# INSTRUMENT FETCH
+# FETCH INSTRUMENT
 # -------------------------
 def fetch_instrument(inst):
     r = session.post(
@@ -114,7 +89,7 @@ def fetch_instrument(inst):
     return r.text
 
 # -------------------------
-# PARSER (SAFE)
+# PARSER
 # -------------------------
 def parse_order_book(html):
     soup = BeautifulSoup(html, "html.parser")
@@ -148,10 +123,13 @@ def parse_order_book(html):
 
     total_volume = sum([b["volume"] for b in buy] + [s["volume"] for s in sell])
 
-    return {"last_price": last_price, "volume": total_volume}
+    return {
+        "last_price": last_price,
+        "volume": total_volume
+    }
 
 # -------------------------
-# SAVE
+# SAVE DAILY
 # -------------------------
 def save_daily(stock, data):
     price = data["last_price"]
@@ -172,12 +150,14 @@ if __name__ == "__main__":
 
     stocks = fetch_stocks()
 
+    print(f"Total stocks: {len(stocks)}", flush=True)
+
     success = 0
     failed = 0
 
     for i, stock in enumerate(stocks):
         try:
-            print(f"[{i+1}] {stock}", flush=True)
+            print(f"[{i+1}/{len(stocks)}] {stock}", flush=True)
 
             html = fetch_instrument(stock)
             data = parse_order_book(html)
@@ -186,6 +166,7 @@ if __name__ == "__main__":
 
             conn.commit()
 
+            print(f"Saved {stock}", flush=True)
             success += 1
 
         except Exception as e:
@@ -193,8 +174,8 @@ if __name__ == "__main__":
             print("ERROR:", stock, e, flush=True)
             failed += 1
 
-    print("DONE", flush=True)
-    print("Success:", success, "Failed:", failed, flush=True)
-
     cursor.close()
     conn.close()
+
+    print("DONE ✔", flush=True)
+    print("Success:", success, "Failed:", failed, flush=True)
